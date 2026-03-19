@@ -1,0 +1,182 @@
+# claude-remote-shell
+
+A single-script CLI tool that redirects [Claude Code](https://claude.ai/code)'s
+Bash tool commands to a remote machine over SSH, with optional bidirectional
+file sync via [Mutagen](https://mutagen.io).
+
+Inspired by [langwatch/claude-remote](https://github.com/langwatch/claude-remote).
+
+## Why
+
+- **Free up your local machine** — builds, tests, and long-running shell commands
+  execute on the remote, so your laptop stays cool and available for other work
+- **Tap into more capable hardware** — point Claude at a beefier server or cloud
+  instance without giving up your local editor, MCP tools, or settings
+- **No UI lag** — Claude itself and all file operations run locally, so reading,
+  editing, and searching code feels instant regardless of remote latency
+- **Relax shell permissions** — when the remote is a dedicated VM, unrestricted
+  Bash execution carries no risk to your local machine, so you can auto-approve
+  all shell commands without hesitation
+
+## How It Works
+
+Claude Code supports a `CLAUDE_CODE_SHELL` environment variable that replaces
+the default shell used for Bash tool execution. `claude-remote-shell` exploits
+this to transparently intercept every shell command Claude runs and forward it
+to a remote host via SSH — with the same working directory, stdout/stderr, and
+exit code.
+
+Only the Bash tool is redirected — all other tools (file edits, writes, MCP
+calls, etc.) continue to run locally as normal. This means Claude reads and
+writes files on your local machine, but executes shell commands on the remote.
+
+Optionally, it syncs your local project directory to the remote with Mutagen,
+flushing before and after each command so both sides stay consistent. If the
+local and remote paths differ, paths are automatically translated in both
+directions — outbound in commands, inbound in output.
+
+## Requirements
+
+- SSH access to the remote host
+
+## Installation
+
+```sh
+brew tap torarnv/claude-remote-shell
+brew install claude-remote-shell
+```
+
+## Usage
+
+```sh
+# Remote execution only (no project sync)
+claude-remote-shell [user@]host
+
+# Remote execution + sync current directory to a path on the remote
+claude-remote-shell [user@]host:/path/on/remote
+
+# Pass additional Claude options
+claude-remote-shell [user@]host:/path/on/remote --model claude-opus-4-6
+```
+
+Claude launches normally — all Bash tool commands are silently routed to the
+remote host. The working directory follows `cd` commands across calls.
+
+## Project Sync
+
+When a remote path is given (`host:/path`), the current directory is synced
+bidirectionally with that path on the remote using Mutagen. The sync is flushed
+before each SSH command (local → remote) and after (remote → local).
+
+If the remote path differs from the local path, paths are automatically
+translated in both directions: local paths in commands are rewritten to the
+remote path before execution, and remote paths in output are rewritten back to
+local paths before Claude sees them.
+
+> [!NOTE]
+> Path translation only applies to the text of commands and their output — it
+> does not rewrite file contents on disk. If your project contains files that
+> embed absolute paths (e.g. a git worktree, where the `.git` file contains a
+> `gitdir:` pointer to the local absolute path), those will be synced verbatim
+> and will be wrong on the remote.
+
+To customize Mutagen sync behavior, create `.claude/remote-shell/mutagen.yml`
+in your project directory. If present, it is passed to `mutagen sync create`
+via `-c`.
+
+For example, to exclude large directories from syncing:
+
+```yaml
+sync:
+  defaults:
+    ignore:
+      paths:
+        - "node_modules"
+        - ".build"
+```
+
+The Mutagen daemon and session are isolated per session (via
+`MUTAGEN_DATA_DIRECTORY`) and torn down automatically on exit.
+
+## Permissions
+
+By default, Claude will prompt for approval before running each Bash command. If the remote
+is a dedicated VM you trust, you can auto-approve all Bash commands by passing
+`--allowedTools "Bash(*)"`:
+
+```sh
+claude-remote-shell user@host --allowedTools "Bash(*)"
+```
+
+For convenience a `claude-remote-shell-yolo` command is installed alongside
+the main command, which auto-approves all Bash commands:
+
+```sh
+claude-remote-shell-yolo user@host:/path/on/remote
+```
+
+## Known Issues
+
+- When using subagents, you may see harmless warnings about unreadable files
+  in Claude's task tracking directory. Claude stores actual subagent output in
+  `~/.claude/projects/` on your local machine, and places symlinks to those
+  files in the synced temp directory. When the temp directory is synced to the
+  remote, the symlinks dangle because `~/.claude` is not synced. Claude may
+  attempt to read these via `tail` for progress checks, which fails on the
+  remote, but it falls back to its TaskOutput API gracefully.
+
+## When to Use Remote Shell vs Other Approaches
+
+**Built-in sandbox** (`/sandbox`) constrains what shell commands can do on your
+local machine — restricting filesystem writes to defined paths and network
+access to approved domains, enforced at the OS level. Everything still runs
+locally, so file tools and your editor workflow are unaffected. It is a safety
+net for local execution.
+
+**Remote Control** (`claude remote-control`) keeps Claude running on your local
+machine but lets you connect to the session from a browser, phone, or another
+computer. It is the inverse of remote execution: you are remote, but Claude and
+all its tools — Bash, file operations, MCP — still run locally. Use it when you
+want to continue an existing local session from another device, not when you
+want to offload work to a different machine. It requires a claude.ai
+subscription and does not work with API keys.
+
+**Running Claude inside a VM** puts everything — Bash, file reads, file writes,
+MCP calls — inside the VM. Nothing touches your host machine. This is the most
+complete isolation, but it comes with trade-offs: files live inside the VM so
+your local editor and file tools lose direct access, and any MCP servers and
+Claude settings you rely on must be configured again inside the VM.
+
+**Remote shell** has a different primary goal: running commands on a specific
+remote machine. Claude runs locally with all your local tools, so file
+operations, your editor, and MCP integrations work at full speed. Only Bash
+commands go to the remote host. File operations are not isolated — they still
+happen locally — but that is the right trade-off when you need Bash to run on
+a particular machine: a powerful build server, a machine with specific hardware
+or OS requirements, an environment that mirrors production, or a dedicated VM where you can freely allow all Bash commands without risk to your local machine.
+
+## Comparison with langwatch/claude-remote
+
+`claude-remote-shell` was inspired by
+[langwatch/claude-remote](https://github.com/langwatch/claude-remote) but
+differs in a few areas:
+
+**No silent fallback to local execution** — If the remote host is unreachable,
+commands fail immediately. There is no automatic switch to running on your local
+machine, which could otherwise silently undo the whole point of using a remote
+VM.
+
+**No blanket permission bypass** — Claude's normal permission prompts apply by
+default. You can opt in to auto-approving Bash commands with
+`--allowedTools "Bash(*)"` when the remote is a VM you trust, while file
+operations remain gated. `langwatch/claude-remote` disables all permission
+prompts globally, including for local file operations or MCP tools.
+
+**Live output streaming** — Output from shell commands is streamed to Claude as
+it arrives. This matters for long-running or background tasks, where you want
+Claude to see progress rather than waiting for a command to fully complete
+before seeing any output.
+
+**Single script, zero configuration** — No setup wizard, config files, or
+suite of helper scripts to install and manage. Install with Homebrew or put a
+single file on your `PATH`.

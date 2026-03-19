@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# claude-remote-shell — redirect Claude Code's Bash tool commands to a remote machine
+#
+# Launcher mode:      claude-remote-shell user@host:/path [claude args...]
+# Shell-wrapper mode: invoked automatically by Claude Code via CLAUDE_CODE_SHELL
+
+set -euo pipefail
+
+# Shell-wrapper mode: invoked by Claude Code via the CLAUDE_CODE_SHELL symlink.
+# Args: -c [-l] <command>  (-l present when no shell snapshot exists)
+# The command string is always the last argument.
+if [[ "$(basename "$0")" == "bash" ]]; then
+    cmd="${@: -1}"
+
+    sync_flush() {
+        mutagen sync flush --all >/dev/null
+    }
+
+    # Translate local paths to remote paths in the command and cwd.
+    remote_cwd="$PWD"
+    map_path=false
+    [[ -n "${CLAUDE_LOCAL_PATH:-}" && "${CLAUDE_LOCAL_PATH:-}" != "${CLAUDE_REMOTE_PATH:-}" ]] && map_path=true
+
+    if $map_path; then
+        cmd="${cmd//$CLAUDE_LOCAL_PATH/$CLAUDE_REMOTE_PATH}"
+        remote_cwd="${PWD//$CLAUDE_LOCAL_PATH/$CLAUDE_REMOTE_PATH}"
+    fi
+
+    # Build the remote command: cd to the same cwd, then run the command
+    # as-is (including Claude's pwd capture suffix, which writes to the
+    # synced tmpdir on the remote and gets flushed back after).
+    remote_script='export SHELL=bash && cd "$1" && eval "$2"'
+    remote_cmd=$(printf 'bash -c %q _ %q %q' "$remote_script" "$remote_cwd" "$cmd")
+
+    sync_flush
+
+    if $map_path; then
+        # Stream stdout/stderr through FIFOs with awk filters to translate remote paths back to local.
+        fifo_dir=$(mktemp -d)
+        mkfifo "$fifo_dir/stdout" "$fifo_dir/stderr"
+
+        awk_map_path='BEGIN { gsub(/[][\\^$.|*+?(){}]/, "\\\\&", r) }
+            { gsub(r, l); print > out; fflush(out) }'
+
+        awk -v r="$CLAUDE_REMOTE_PATH" -v l="$CLAUDE_LOCAL_PATH" -v out="/dev/stdout" \
+            "$awk_map_path" <"$fifo_dir/stdout" &
+        stdout_pid=$!
+
+        awk -v r="$CLAUDE_REMOTE_PATH" -v l="$CLAUDE_LOCAL_PATH" -v out="/dev/stderr" \
+            "$awk_map_path" <"$fifo_dir/stderr" &
+        stderr_pid=$!
+
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "$remote_cmd" \
+            >"$fifo_dir/stdout" 2>"$fifo_dir/stderr"
+        exit_code=$?
+
+        wait "$stdout_pid" "$stderr_pid" 2>/dev/null || true
+        rm -rf "$fifo_dir"
+    else
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "$remote_cmd"
+        exit_code=$?
+    fi
+
+    sync_flush
+
+    exit $exit_code
+fi
+
+# Launcher mode: parse destination and launch Claude with remote shell configured.
+[[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [user@]host[:/path] [claude args...]" >&2; exit 1; }
+dest="$1"
+shift
+
+if [[ "$dest" == *:* ]]; then
+    host="${dest%%:*}"
+    remote_path="${dest#*:}"
+else
+    host="$dest"
+    remote_path=""
+fi
+
+# Resolve to absolute path so CLAUDE_CODE_SHELL works from any cwd.
+script="${BASH_SOURCE[0]}"
+if [[ "$script" != /* ]]; then
+    script="$(cd "$(dirname "$script")" && pwd)/$(basename "$script")"
+fi
+
+command -v mutagen &>/dev/null || { echo "⚠️ mutagen is required but not found in PATH" >&2; exit 1; }
+
+session_tmpdir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
+export TMPDIR="$session_tmpdir/claude"
+export CLAUDE_CODE_TMPDIR="$TMPDIR"
+export MUTAGEN_DATA_DIRECTORY="$session_tmpdir/mutagen"
+mkdir -p "$TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
+
+export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_tmpdir/ssh-%C -o ControlPersist=yes"
+
+teardown() {
+    mutagen sync terminate --all >/dev/null 2>&1 || true
+    mutagen daemon stop 2>/dev/null || true
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_tmpdir'" 2>/dev/null || true
+    ssh -O exit $CLAUDE_REMOTE_SSH_OPTIONS "$host" 2>/dev/null || true
+    rm -rf "$session_tmpdir"
+}
+trap teardown EXIT
+
+mutagen_options=(--sync-mode=two-way-resolved)
+
+# Optional user-provided Mutagen config file.
+config_file="$(pwd -P)/.claude/remote-shell/mutagen.yml"
+[[ -f "$config_file" ]] && mutagen_options+=(-c "$config_file")
+
+# Always sync the tmpdir (needed for cwd propagation and task files).
+ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$TMPDIR'"
+mutagen sync terminate claude-tmpdir 2>/dev/null || true
+mutagen sync create \
+    --name=claude-tmpdir \
+    "${mutagen_options[@]}" \
+    --ignore="*" \
+    --ignore="!claude-*" \
+    --ignore="!claude-*/**" \
+    --symlink-mode=posix-raw \
+    "$TMPDIR" \
+    "$host:$TMPDIR" >/dev/null
+
+# Optionally sync the project directory if a remote path was given.
+if [[ -n "$remote_path" ]]; then
+    project_dir="$(pwd -P)"
+    echo "🗂️ Syncing $project_dir ↔ $host:$remote_path"
+    mutagen sync terminate claude-project 2>/dev/null || true
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$remote_path'"
+    mutagen sync create \
+        --name=claude-project \
+        "${mutagen_options[@]}" \
+        "$project_dir" \
+        "$host:$remote_path" >/dev/null
+    export CLAUDE_LOCAL_PATH="$project_dir"
+    export CLAUDE_REMOTE_PATH="$remote_path"
+fi
+
+# CLAUDE_CODE_SHELL requires the path to contain "bash" or "zsh".
+# Create a symlink named "bash" in our session tmpdir.
+symlink="$session_tmpdir/bash"
+ln -sf "$script" "$symlink"
+export CLAUDE_CODE_SHELL="$symlink"
+
+echo "📡 Running Bash tool remotely on $host"
+export CLAUDE_REMOTE_HOST="$host"
+
+remote_context="All Bash commands in this session are executed on remote host $host via SSH."
+if [[ -n "$remote_path" ]]; then
+    remote_context+=" Project synced: local $project_dir ↔ $host:$remote_path."
+    [[ "$project_dir" != "$remote_path" ]] && remote_context+=" Paths are automatically translated between local and remote."
+fi
+remote_context+=" TMPDIR is synced bidirectionally for cwd propagation."
+
+yolo_opts=""
+[[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
+
+claude --append-system-prompt "$remote_context" $yolo_opts "$@"
