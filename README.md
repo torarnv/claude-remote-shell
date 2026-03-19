@@ -118,7 +118,7 @@ claude-remote-shell-yolo user@host:/path/on/remote
   attempt to read these via `tail` for progress checks, which fails on the
   remote, but it falls back to its TaskOutput API gracefully.
 
-## When to Use Remote Shell vs Other Approaches
+## Alternatives
 
 **Built-in sandbox** (`/sandbox`) constrains what shell commands can do on your
 local machine — restricting filesystem writes to defined paths and network
@@ -140,36 +140,10 @@ complete isolation, but it comes with trade-offs: files live inside the VM so
 your local editor and file tools lose direct access, and any MCP servers and
 Claude settings you rely on must be configured again inside the VM.
 
-**Remote shell** has a different primary goal: running commands on a specific
-remote machine. Claude runs locally with all your local tools, so file
-operations, your editor, and MCP integrations work at full speed. Only Bash
-commands go to the remote host. File operations are not isolated — they still
-happen locally — but that is the right trade-off when you need Bash to run on
-a particular machine: a powerful build server, a machine with specific hardware
-or OS requirements, an environment that mirrors production, or a dedicated VM where you can freely allow all Bash commands without risk to your local machine.
-
-## Comparison with langwatch/claude-remote
-
-`claude-remote-shell` was inspired by
-[langwatch/claude-remote](https://github.com/langwatch/claude-remote) but
-differs in a few areas:
-
-**No silent fallback to local execution** — If the remote host is unreachable,
-commands fail immediately. There is no automatic switch to running on your local
-machine, which could otherwise silently undo the whole point of using a remote
-VM.
-
-**No blanket permission bypass** — Claude's normal permission prompts apply by
-default. You can opt in to auto-approving Bash commands with
-`--allowedTools "Bash(*)"` when the remote is a VM you trust, while file
-operations remain gated. `langwatch/claude-remote` disables all permission
-prompts globally, including for local file operations or MCP tools.
-
-**Live output streaming** — Output from shell commands is streamed to Claude as
-it arrives. This matters for long-running or background tasks, where you want
-Claude to see progress rather than waiting for a command to fully complete
-before seeing any output.
-
-**Single script, zero configuration** — No setup wizard, config files, or
-suite of helper scripts to install and manage. Install with Homebrew or put a
-single file on your `PATH`.
+**[langwatch/claude-remote](https://github.com/langwatch/claude-remote)** takes
+the same remote shell approach, and is what this project was inspired by.
+Differences: it falls back to local execution when the remote is unreachable
+(which can silently undermine the point of using a remote VM), disables all
+permission prompts globally rather than just for Bash, buffers command output
+until completion rather than streaming, and is a multi-script suite with a setup
+wizard rather than a single file.
