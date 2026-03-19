@@ -42,8 +42,7 @@ directions — outbound in commands, inbound in output.
 ## Installation
 
 ```sh
-brew tap torarnv/claude-remote-shell
-brew install claude-remote-shell
+brew install torarnv/claude-remote-shell/claude-remote-shell
 ```
 
 ## Usage
