@@ -4,10 +4,6 @@ A single-script CLI tool that redirects [Claude Code](https://claude.ai/code)'s
 Bash tool commands to a remote machine over SSH, with optional bidirectional
 file sync via [Mutagen](https://mutagen.io).
 
-Inspired by [langwatch/claude-remote](https://github.com/langwatch/claude-remote).
-
-## Why
-
 - **Free up your local machine** — builds, tests, and long-running shell commands
   execute on the remote, so your laptop stays cool and available for other work
 - **Tap into more capable hardware** — point Claude at a beefier server or cloud
@@ -18,26 +14,7 @@ Inspired by [langwatch/claude-remote](https://github.com/langwatch/claude-remote
   Bash execution carries no risk to your local machine, so you can auto-approve
   all shell commands without hesitation
 
-## How It Works
-
-Claude Code supports a `CLAUDE_CODE_SHELL` environment variable that replaces
-the default shell used for Bash tool execution. `claude-remote-shell` exploits
-this to transparently intercept every shell command Claude runs and forward it
-to a remote host via SSH — with the same working directory, stdout/stderr, and
-exit code.
-
-Only the Bash tool is redirected — all other tools (file edits, writes, MCP
-calls, etc.) continue to run locally as normal. This means Claude reads and
-writes files on your local machine, but executes shell commands on the remote.
-
-Optionally, it syncs your local project directory to the remote with Mutagen,
-flushing before and after each command so both sides stay consistent. If the
-local and remote paths differ, paths are automatically translated in both
-directions — outbound in commands, inbound in output.
-
-## Requirements
-
-- SSH access to the remote host
+Inspired by [langwatch/claude-remote](https://github.com/langwatch/claude-remote) ❤️
 
 ## Installation
 
@@ -60,6 +37,23 @@ claude-remote-shell [user@]host:/path/on/remote --model claude-opus-4-6
 
 Claude launches normally — all Bash tool commands are silently routed to the
 remote host. The working directory follows `cd` commands across calls.
+
+## How It Works
+
+Claude Code supports a `CLAUDE_CODE_SHELL` environment variable that replaces
+the default shell used for Bash tool execution. `claude-remote-shell` exploits
+this to transparently intercept every shell command Claude runs and forward it
+to a remote host via SSH — with the same working directory, stdout/stderr, and
+exit code.
+
+Only the Bash tool is redirected — all other tools (file edits, writes, MCP
+calls, etc.) continue to run locally as normal. This means Claude reads and
+writes files on your local machine, but executes shell commands on the remote.
+
+Optionally, it syncs your local project directory to the remote with Mutagen,
+flushing before and after each command so both sides stay consistent. If the
+local and remote paths differ, paths are automatically translated in both
+directions — outbound in commands, inbound in output.
 
 ## Project Sync
 
