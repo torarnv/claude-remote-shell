@@ -131,8 +131,7 @@ machine but lets you connect to the session from a browser, phone, or another
 computer. It is the inverse of remote execution: you are remote, but Claude and
 all its tools — Bash, file operations, MCP — still run locally. Use it when you
 want to continue an existing local session from another device, not when you
-want to offload work to a different machine. It requires a claude.ai
-subscription and does not work with API keys.
+want to offload work to a different machine.
 
 **Running Claude inside a VM** puts everything — Bash, file reads, file writes,
 MCP calls — inside the VM. Nothing touches your host machine. This is the most
