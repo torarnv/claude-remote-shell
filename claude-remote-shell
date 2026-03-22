@@ -29,8 +29,8 @@ if [[ "$(basename "$0")" == "bash" ]]; then
     # Build the remote command: cd to the same cwd, then run the command
     # as-is (including Claude's pwd capture suffix, which writes to the
     # synced tmpdir on the remote and gets flushed back after).
-    remote_script='export SHELL=bash && cd "$1" && eval "$2"'
-    remote_cmd=$(printf 'bash -c %q _ %q %q' "$remote_script" "$remote_cwd" "$cmd")
+    remote_script='export SHELL=bash TMPDIR="$3" && cd "$1" && eval "$2"'
+    remote_cmd=$(printf 'bash -c %q _ %q %q %q' "$remote_script" "$remote_cwd" "$cmd" "$TMPDIR")
 
     sync_flush
 
@@ -152,7 +152,7 @@ if [[ -n "$remote_path" ]]; then
     remote_context+=" Project synced: local $project_dir ↔ $host:$remote_path."
     [[ "$project_dir" != "$remote_path" ]] && remote_context+=" Paths are automatically translated between local and remote."
 fi
-remote_context+=" TMPDIR is synced bidirectionally for cwd propagation."
+remote_context+=" TMPDIR is synced bidirectionally for cwd propagation. For mktemp, use \$TMPDIR explicitly"
 
 yolo_opts=""
 [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
