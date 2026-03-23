@@ -147,7 +147,7 @@ export CLAUDE_CODE_SHELL="$symlink"
 echo "📡 Running Bash tool remotely on $host"
 export CLAUDE_REMOTE_HOST="$host"
 
-remote_context="All Bash commands in this session are executed on remote host $host via SSH."
+remote_context="All Bash commands in this session are executed on remote host $host via SSH, in a bash shell."
 if [[ -n "$remote_path" ]]; then
     remote_context+=" Project synced: local $project_dir ↔ $host:$remote_path."
     [[ "$project_dir" != "$remote_path" ]] && remote_context+=" Paths are automatically translated between local and remote."
