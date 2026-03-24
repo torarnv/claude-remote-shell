@@ -1,0 +1,19 @@
+name: Update Homebrew Formula
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: claude-remote-shell
+          homebrew-tap: ${{ github.repository }}
+          formula-path: Formula/claude-remote-shell.rb
+          commit-message: Update Homebrew formula to {{version}}
+        env:
+          COMMITTER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
