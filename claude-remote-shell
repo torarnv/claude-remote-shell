@@ -67,7 +67,28 @@ if [[ "$(basename "$0")" == "bash" ]]; then
 fi
 
 # Launcher mode: parse destination and launch Claude with remote shell configured.
-[[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [user@]host[:/path] [claude args...]" >&2; exit 1; }
+[[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [claude-cmd] [user@]host[:/path] [claude args...]" >&2; exit 1; }
+
+claude_bin="claude"
+if [[ $# -ge 2 && "$1" != *:* && "$1" != *@* ]]; then
+    # Possible custom claude command. Validate by checking via
+    # the user's shell (so aliases/functions from rc files work)
+    if [[ -n "$SHELL" ]] && "$SHELL" -c "command -v '$1' >/dev/null 2>&1"; then
+        claude_bin="$1"
+        shift
+    elif command -v "$1" &>/dev/null; then
+        # Fall back to direct check if SHELL is not set
+        claude_bin="$1"
+        shift
+    else
+        echo "Warning: '$1' not found (via $SHELL or command -v), using default 'claude'" >&2
+    fi
+fi
+
+if [[ "$claude_bin" != "claude" ]]; then
+    echo "🦀 Using claude command '$claude_bin'"
+fi
+
 dest="$1"
 shift
 
@@ -157,4 +178,15 @@ remote_context+=" TMPDIR is synced bidirectionally for cwd propagation. For mkte
 yolo_opts=""
 [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
 
-claude --append-system-prompt "$remote_context" $yolo_opts "$@"
+claude_args=()
+claude_args+=(--append-system-prompt)
+claude_args+=("$remote_system_prompt")
+[[ -n "$yolo_opts" ]] && claude_args+=("$yolo_opts")
+claude_args+=("$@")
+
+if [[ -n "$SHELL" ]]; then
+    printf -v cmd '%q ' "$claude_bin" "${claude_args[@]}"
+    "$SHELL" -l -c "exec $cmd" --
+else
+    "$claude_bin" "${claude_args[@]}"
+fi
