@@ -100,6 +100,9 @@ else
     remote_path=""
 fi
 
+echo "📡 Running Bash tool remotely on $host"
+export CLAUDE_REMOTE_HOST="$host"
+
 # Resolve to absolute path so CLAUDE_CODE_SHELL works from any cwd.
 script="${BASH_SOURCE[0]}"
 if [[ "$script" != /* ]]; then
@@ -164,9 +167,6 @@ fi
 symlink="$session_tmpdir/bash"
 ln -sf "$script" "$symlink"
 export CLAUDE_CODE_SHELL="$symlink"
-
-echo "📡 Running Bash tool remotely on $host"
-export CLAUDE_REMOTE_HOST="$host"
 
 remote_context="All Bash commands are automatically executed remotely on host $host via SSH, in a bash shell."
 if [[ -n "$remote_path" ]]; then
