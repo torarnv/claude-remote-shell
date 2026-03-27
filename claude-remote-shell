@@ -29,7 +29,7 @@ if [[ "$(basename "$0")" == "bash" ]]; then
     # Build the remote command: cd to the same cwd, then run the command
     # as-is (including Claude's pwd capture suffix, which writes to the
     # synced tmpdir on the remote and gets flushed back after).
-    remote_script='export SHELL=bash TMPDIR="$3" && cd "$1" && eval "$2"'
+    remote_script='export SHELL=bash TMPDIR="$3" && mkdir -p "$TMPDIR" && cd "$1" && eval "$2"'
     remote_cmd=$(printf 'bash -c %q _ %q %q %q' "$remote_script" "$remote_cwd" "$cmd" "$TMPDIR")
 
     sync_flush
@@ -111,20 +111,20 @@ fi
 
 command -v mutagen &>/dev/null || { echo "⚠️ mutagen is required but not found in PATH" >&2; exit 1; }
 
-session_tmpdir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
-export TMPDIR="$session_tmpdir/claude"
-export CLAUDE_CODE_TMPDIR="$TMPDIR"
-export MUTAGEN_DATA_DIRECTORY="$session_tmpdir/mutagen"
-mkdir -p "$TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
+session_dir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
+export TMPDIR="$session_dir/tmp"
+export CLAUDE_CODE_TMPDIR="$TMPDIR/claude-tmp"
+export MUTAGEN_DATA_DIRECTORY="$session_dir/mutagen"
+mkdir -p "$TMPDIR" "$CLAUDE_CODE_TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
 
-export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_tmpdir/ssh-%C -o ControlPersist=yes"
+export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
 
 teardown() {
     mutagen sync terminate --all >/dev/null 2>&1 || true
     mutagen daemon stop 2>/dev/null || true
-    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_tmpdir'" 2>/dev/null || true
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_dir'" 2>/dev/null || true
     ssh -O exit $CLAUDE_REMOTE_SSH_OPTIONS "$host" 2>/dev/null || true
-    rm -rf "$session_tmpdir"
+    rm -rf "$session_dir"
 }
 trap teardown EXIT
 
@@ -134,8 +134,10 @@ mutagen_options=(--sync-mode=two-way-resolved)
 config_file="$(pwd -P)/.claude/remote-shell/mutagen.yml"
 [[ -f "$config_file" ]] && mutagen_options+=(-c "$config_file")
 
-# Always sync the tmpdir (needed for cwd propagation and task files).
-ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$TMPDIR'"
+# Sync the tmpdir, filtered to claude-* files/dirs. This covers both Claude Code's
+# infrastructure files (e.g. cwd tracking) and CLAUDE_CODE_TMPDIR (claude-tmp/),
+# while excluding noise from MCP servers and other infrastructure.
+ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$CLAUDE_CODE_TMPDIR'"
 mutagen sync terminate claude-tmpdir 2>/dev/null || true
 mutagen sync create \
     --name=claude-tmpdir \
@@ -164,7 +166,7 @@ fi
 
 # CLAUDE_CODE_SHELL requires the path to contain "bash" or "zsh".
 # Create a symlink named "bash" in our session tmpdir.
-symlink="$session_tmpdir/bash"
+symlink="$session_dir/bash"
 ln -sf "$script" "$symlink"
 export CLAUDE_CODE_SHELL="$symlink"
 
@@ -177,7 +179,7 @@ All Bash tool commands are automatically executed remotely in the following envi
 - Platform / OS: $remote_system
 - Primary working directory: $remote_path
 - Shell: bash
-- Temporary directory (TMPDIR): $TMPDIR
+- Temporary directory (TMPDIR): $CLAUDE_CODE_TMPDIR
 Do NOT assume /tmp is the temporary directory.
 Always respect the TMPDIR environment variable.
 For \`mktemp\`, use \$TMPDIR explicitly
