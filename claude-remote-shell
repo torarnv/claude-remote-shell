@@ -168,12 +168,21 @@ symlink="$session_tmpdir/bash"
 ln -sf "$script" "$symlink"
 export CLAUDE_CODE_SHELL="$symlink"
 
-remote_context="All Bash commands are automatically executed remotely on host $host via SSH, in a bash shell."
-if [[ -n "$remote_path" ]]; then
-    remote_context+=" Project synced: local $project_dir ↔ $host:$remote_path."
-    [[ "$project_dir" != "$remote_path" ]] && remote_context+=" Paths are automatically translated between local and remote."
-fi
-remote_context+=" TMPDIR is synced bidirectionally for cwd propagation. For mktemp, use \$TMPDIR explicitly"
+# Give Claude context about the remote shell environment,
+# similar to the existing environment system instruction.
+remote_system=$(ssh $host 'uname -sr' 2>/dev/null)
+remote_system_prompt=$(cat <<EOF
+All Bash tool commands are automatically executed remotely in the following environment:
+- Remote host: $host
+- Platform / OS: $remote_system
+- Primary working directory: $remote_path
+- Shell: bash
+- Temporary directory (TMPDIR): $TMPDIR
+Do NOT assume /tmp is the temporary directory.
+Always respect the TMPDIR environment variable.
+For \`mktemp\`, use \$TMPDIR explicitly
+EOF
+)
 
 yolo_opts=""
 [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
