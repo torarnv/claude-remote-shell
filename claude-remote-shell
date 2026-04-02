@@ -164,14 +164,11 @@ EOF
         fi
     fi
 
-    yolo_opts=""
-    [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
-
     claude_args=()
     claude_args+=(--plugin-dir "$session_dir/plugin")
     claude_args+=(--append-system-prompt)
     claude_args+=("$remote_system_prompt")
-    [[ -n "$yolo_opts" ]] && claude_args+=("$yolo_opts")
+    [[ "$(basename "$0")" == *-yolo ]] && claude_args+=(--allowedTools 'Bash(*)')
     claude_args+=("$@")
 
     if [[ -n "$SHELL" ]]; then
