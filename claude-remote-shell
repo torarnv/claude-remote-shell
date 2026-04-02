@@ -156,6 +156,14 @@ NEVER assume /tmp — always use \$TMPDIR, including for mktemp.
 To check subagent output, ALWAYS use the TaskOutput tool, NEVER Bash.
 EOF
 )
+    if [[ -d ".git" ]]; then
+        vcs_ignored=$(mutagen sync list --template '{{json .}}' claude-project 2>/dev/null \
+            | jq -r '.[0].ignore.vcs')
+        if [[ "$vcs_ignored" == "true" ]]; then
+            remote_system_prompt+="Git is not available on the remote (.git is not synced). NEVER run git commands — they will fail."
+        fi
+    fi
+
     yolo_opts=""
     [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
 
