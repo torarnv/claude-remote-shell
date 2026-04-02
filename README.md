@@ -111,16 +111,6 @@ the main command, which auto-approves all Bash commands:
 claude-remote-shell-yolo user@host:/path/on/remote
 ```
 
-## Known Issues
-
-- When using subagents, you may see harmless warnings about unreadable files
-  in Claude's task tracking directory. Claude stores actual subagent output in
-  `~/.claude/projects/` on your local machine, and places symlinks to those
-  files in the synced temp directory. When the temp directory is synced to the
-  remote, the symlinks dangle because `~/.claude` is not synced. Claude may
-  attempt to read these via `tail` for progress checks, which fails on the
-  remote, but it falls back to its TaskOutput API gracefully.
-
 ## Alternatives
 
 **Built-in sandbox** (`/sandbox`) constrains what shell commands can do on your

@@ -145,18 +145,17 @@ EOF
     # similar to the existing environment system instruction.
     remote_system=$(ssh $host 'uname -sr' 2>/dev/null)
     remote_system_prompt=$(cat <<EOF
-All Bash tool commands are automatically executed remotely in the following environment:
-- Remote host: $host
+All Bash tool commands run remotely on $host, not locally. You have no local shell access.
+
+Remote environment:
 - Platform / OS: $remote_system
-- Primary working directory: $remote_path
 - Shell: bash
-- Temporary directory (TMPDIR): $CLAUDE_CODE_TMPDIR
-Do NOT assume /tmp is the temporary directory.
-Always respect the TMPDIR environment variable.
-For \`mktemp\`, use \$TMPDIR explicitly
+- TMPDIR: $CLAUDE_CODE_TMPDIR
+
+NEVER assume /tmp — always use \$TMPDIR, including for mktemp.
+To check subagent output, ALWAYS use the TaskOutput tool, NEVER Bash.
 EOF
 )
-
     yolo_opts=""
     [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
 
