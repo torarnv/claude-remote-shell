@@ -176,8 +176,29 @@ EOF
     ;;
 
 session-start)
-    # SessionStart hook: write incoming JSON to session dir for later use.
-    cat > "$CLAUDE_REMOTE_SHELL_DIR/session-start.json"
+    input=$(cat)
+    transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path')
+    local_session_dir="${transcript_path%.jsonl}"
+    session_id=$(basename "$local_session_dir")
+    local_project_dir=$(dirname "$local_session_dir")
+    remote_project_dir="$CLAUDE_REMOTE_SHELL_DIR/project"
+    remote_session_dir="$remote_project_dir/$session_id"
+
+    mkdir -p "$local_session_dir"
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "mkdir -p '$remote_session_dir'"
+    mutagen sync create \
+        --name=claude-session-data \
+        --sync-mode=one-way-safe \
+        --symlink-mode=posix-raw \
+        --ignore="*" \
+        --ignore="!tool-results" \
+        --ignore="!tool-results/**" \
+        "$local_session_dir" \
+        "$CLAUDE_REMOTE_HOST:$remote_session_dir" >/dev/null
+
+    # Persist path mappings for the bash wrapper via Claude's env mechanism.
+    printf 'export CLAUDE_LOCAL_PROJECT_DIR=%q\n' "$local_project_dir" >> "$CLAUDE_ENV_FILE"
+    printf 'export CLAUDE_REMOTE_PROJECT_DIR=%q\n' "$remote_project_dir" >> "$CLAUDE_ENV_FILE"
     ;;
 
 bash)
@@ -199,6 +220,10 @@ bash)
         cmd="${cmd//$CLAUDE_LOCAL_PATH/$CLAUDE_REMOTE_PATH}"
         remote_cwd="${PWD//$CLAUDE_LOCAL_PATH/$CLAUDE_REMOTE_PATH}"
     fi
+
+    # Translate local project-data paths to remote (set up by session-start hook).
+    [[ -n "${CLAUDE_LOCAL_PROJECT_DIR:-}" ]] && \
+        cmd="${cmd//$CLAUDE_LOCAL_PROJECT_DIR/$CLAUDE_REMOTE_PROJECT_DIR}"
 
     # Build the remote command: cd to the same cwd, then run the command
     # as-is (including Claude's pwd capture suffix, which writes to the
