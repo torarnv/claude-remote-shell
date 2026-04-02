@@ -1,15 +1,153 @@
 #!/usr/bin/env bash
+#
 # claude-remote-shell — redirect Claude Code's Bash tool commands to a remote machine
 #
-# Launcher mode:      claude-remote-shell user@host:/path [claude args...]
-# Shell-wrapper mode: invoked automatically by Claude Code via CLAUDE_CODE_SHELL
 
 set -euo pipefail
 
-# Shell-wrapper mode: invoked by Claude Code via the CLAUDE_CODE_SHELL symlink.
-# Args: -c [-l] <command>  (-l present when no shell snapshot exists)
-# The command string is always the last argument.
-if [[ "$(basename "$0")" == "bash" ]]; then
+case "$(basename "$0")" in
+claude-remote-shell*)
+    # Launcher mode: parse destination and launch Claude with remote shell configured.
+    [[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [claude-cmd] [user@]host[:/path] [claude args...]" >&2; exit 1; }
+
+    claude_bin="claude"
+    if [[ $# -ge 2 && "$1" != *:* && "$1" != *@* ]]; then
+        # Possible custom claude command. Validate by checking via
+        # the user's shell (so aliases/functions from rc files work)
+        if [[ -n "$SHELL" ]] && "$SHELL" -c "command -v '$1' >/dev/null 2>&1"; then
+            claude_bin="$1"
+            shift
+        elif command -v "$1" &>/dev/null; then
+            # Fall back to direct check if SHELL is not set
+            claude_bin="$1"
+            shift
+        else
+            echo "Warning: '$1' not found (via $SHELL or command -v), using default 'claude'" >&2
+        fi
+    fi
+
+    if [[ "$claude_bin" != "claude" ]]; then
+        echo "🦀 Using claude command '$claude_bin'"
+    fi
+
+    dest="$1"
+    shift
+
+    if [[ "$dest" == *:* ]]; then
+        host="${dest%%:*}"
+        remote_path="${dest#*:}"
+    else
+        host="$dest"
+        remote_path=""
+    fi
+
+    echo "📡 Running Bash tool remotely on $host"
+    export CLAUDE_REMOTE_HOST="$host"
+
+    # Resolve to absolute path so CLAUDE_CODE_SHELL works from any cwd.
+    script="${BASH_SOURCE[0]}"
+    if [[ "$script" != /* ]]; then
+        script="$(cd "$(dirname "$script")" && pwd)/$(basename "$script")"
+    fi
+
+    command -v mutagen &>/dev/null || { echo "⚠️ mutagen is required but not found in PATH" >&2; exit 1; }
+
+    session_dir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
+    export TMPDIR="$session_dir/tmp"
+    export CLAUDE_CODE_TMPDIR="$TMPDIR/claude-tmp"
+    export MUTAGEN_DATA_DIRECTORY="$session_dir/mutagen"
+    mkdir -p "$TMPDIR" "$CLAUDE_CODE_TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
+
+    export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
+
+    teardown() {
+        mutagen sync terminate --all >/dev/null 2>&1 || true
+        mutagen daemon stop 2>/dev/null || true
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_dir'" 2>/dev/null || true
+        ssh -O exit $CLAUDE_REMOTE_SSH_OPTIONS "$host" 2>/dev/null || true
+        rm -rf "$session_dir"
+    }
+    trap teardown EXIT
+
+    mutagen_options=(--sync-mode=two-way-resolved)
+
+    # Optional user-provided Mutagen config file.
+    config_file="$(pwd -P)/.claude/remote-shell/mutagen.yml"
+    [[ -f "$config_file" ]] && mutagen_options+=(-c "$config_file")
+
+    # Sync the tmpdir, filtered to claude-* files/dirs. This covers both Claude Code's
+    # infrastructure files (e.g. cwd tracking) and CLAUDE_CODE_TMPDIR (claude-tmp/),
+    # while excluding noise from MCP servers and other infrastructure.
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$CLAUDE_CODE_TMPDIR'"
+    mutagen sync terminate claude-tmpdir 2>/dev/null || true
+    mutagen sync create \
+        --name=claude-tmpdir \
+        "${mutagen_options[@]}" \
+        --ignore="*" \
+        --ignore="!claude-*" \
+        --ignore="!claude-*/**" \
+        --symlink-mode=posix-raw \
+        "$TMPDIR" \
+        "$host:$TMPDIR" >/dev/null
+
+    # Optionally sync the project directory if a remote path was given.
+    if [[ -n "$remote_path" ]]; then
+        project_dir="$(pwd -P)"
+        echo "🗂️ Syncing $project_dir ↔ $host:$remote_path"
+        mutagen sync terminate claude-project 2>/dev/null || true
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$remote_path'"
+        mutagen sync create \
+            --name=claude-project \
+            "${mutagen_options[@]}" \
+            "$project_dir" \
+            "$host:$remote_path" >/dev/null
+        export CLAUDE_LOCAL_PATH="$project_dir"
+        export CLAUDE_REMOTE_PATH="$remote_path"
+    fi
+
+    # CLAUDE_CODE_SHELL requires the path to contain "bash" or "zsh".
+    # Create a symlink named "bash" in our session tmpdir.
+    symlink="$session_dir/bash"
+    ln -sf "$script" "$symlink"
+    export CLAUDE_CODE_SHELL="$symlink"
+
+    # Give Claude context about the remote shell environment,
+    # similar to the existing environment system instruction.
+    remote_system=$(ssh $host 'uname -sr' 2>/dev/null)
+    remote_system_prompt=$(cat <<EOF
+All Bash tool commands are automatically executed remotely in the following environment:
+- Remote host: $host
+- Platform / OS: $remote_system
+- Primary working directory: $remote_path
+- Shell: bash
+- Temporary directory (TMPDIR): $CLAUDE_CODE_TMPDIR
+Do NOT assume /tmp is the temporary directory.
+Always respect the TMPDIR environment variable.
+For \`mktemp\`, use \$TMPDIR explicitly
+EOF
+)
+
+    yolo_opts=""
+    [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
+
+    claude_args=()
+    claude_args+=(--append-system-prompt)
+    claude_args+=("$remote_system_prompt")
+    [[ -n "$yolo_opts" ]] && claude_args+=("$yolo_opts")
+    claude_args+=("$@")
+
+    if [[ -n "$SHELL" ]]; then
+        printf -v cmd '%q ' "$claude_bin" "${claude_args[@]}"
+        "$SHELL" -l -c "exec $cmd" --
+    else
+        "$claude_bin" "${claude_args[@]}"
+    fi
+    ;;
+
+bash)
+    # Shell-wrapper mode: invoked by Claude Code via the CLAUDE_CODE_SHELL symlink.
+    # Args: -c [-l] <command>  (-l present when no shell snapshot exists)
+    # The command string is always the last argument.
     cmd="${@: -1}"
 
     sync_flush() {
@@ -64,140 +202,5 @@ if [[ "$(basename "$0")" == "bash" ]]; then
     sync_flush
 
     exit $exit_code
-fi
-
-# Launcher mode: parse destination and launch Claude with remote shell configured.
-[[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [claude-cmd] [user@]host[:/path] [claude args...]" >&2; exit 1; }
-
-claude_bin="claude"
-if [[ $# -ge 2 && "$1" != *:* && "$1" != *@* ]]; then
-    # Possible custom claude command. Validate by checking via
-    # the user's shell (so aliases/functions from rc files work)
-    if [[ -n "$SHELL" ]] && "$SHELL" -c "command -v '$1' >/dev/null 2>&1"; then
-        claude_bin="$1"
-        shift
-    elif command -v "$1" &>/dev/null; then
-        # Fall back to direct check if SHELL is not set
-        claude_bin="$1"
-        shift
-    else
-        echo "Warning: '$1' not found (via $SHELL or command -v), using default 'claude'" >&2
-    fi
-fi
-
-if [[ "$claude_bin" != "claude" ]]; then
-    echo "🦀 Using claude command '$claude_bin'"
-fi
-
-dest="$1"
-shift
-
-if [[ "$dest" == *:* ]]; then
-    host="${dest%%:*}"
-    remote_path="${dest#*:}"
-else
-    host="$dest"
-    remote_path=""
-fi
-
-echo "📡 Running Bash tool remotely on $host"
-export CLAUDE_REMOTE_HOST="$host"
-
-# Resolve to absolute path so CLAUDE_CODE_SHELL works from any cwd.
-script="${BASH_SOURCE[0]}"
-if [[ "$script" != /* ]]; then
-    script="$(cd "$(dirname "$script")" && pwd)/$(basename "$script")"
-fi
-
-command -v mutagen &>/dev/null || { echo "⚠️ mutagen is required but not found in PATH" >&2; exit 1; }
-
-session_dir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
-export TMPDIR="$session_dir/tmp"
-export CLAUDE_CODE_TMPDIR="$TMPDIR/claude-tmp"
-export MUTAGEN_DATA_DIRECTORY="$session_dir/mutagen"
-mkdir -p "$TMPDIR" "$CLAUDE_CODE_TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
-
-export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
-
-teardown() {
-    mutagen sync terminate --all >/dev/null 2>&1 || true
-    mutagen daemon stop 2>/dev/null || true
-    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_dir'" 2>/dev/null || true
-    ssh -O exit $CLAUDE_REMOTE_SSH_OPTIONS "$host" 2>/dev/null || true
-    rm -rf "$session_dir"
-}
-trap teardown EXIT
-
-mutagen_options=(--sync-mode=two-way-resolved)
-
-# Optional user-provided Mutagen config file.
-config_file="$(pwd -P)/.claude/remote-shell/mutagen.yml"
-[[ -f "$config_file" ]] && mutagen_options+=(-c "$config_file")
-
-# Sync the tmpdir, filtered to claude-* files/dirs. This covers both Claude Code's
-# infrastructure files (e.g. cwd tracking) and CLAUDE_CODE_TMPDIR (claude-tmp/),
-# while excluding noise from MCP servers and other infrastructure.
-ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$CLAUDE_CODE_TMPDIR'"
-mutagen sync terminate claude-tmpdir 2>/dev/null || true
-mutagen sync create \
-    --name=claude-tmpdir \
-    "${mutagen_options[@]}" \
-    --ignore="*" \
-    --ignore="!claude-*" \
-    --ignore="!claude-*/**" \
-    --symlink-mode=posix-raw \
-    "$TMPDIR" \
-    "$host:$TMPDIR" >/dev/null
-
-# Optionally sync the project directory if a remote path was given.
-if [[ -n "$remote_path" ]]; then
-    project_dir="$(pwd -P)"
-    echo "🗂️ Syncing $project_dir ↔ $host:$remote_path"
-    mutagen sync terminate claude-project 2>/dev/null || true
-    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$remote_path'"
-    mutagen sync create \
-        --name=claude-project \
-        "${mutagen_options[@]}" \
-        "$project_dir" \
-        "$host:$remote_path" >/dev/null
-    export CLAUDE_LOCAL_PATH="$project_dir"
-    export CLAUDE_REMOTE_PATH="$remote_path"
-fi
-
-# CLAUDE_CODE_SHELL requires the path to contain "bash" or "zsh".
-# Create a symlink named "bash" in our session tmpdir.
-symlink="$session_dir/bash"
-ln -sf "$script" "$symlink"
-export CLAUDE_CODE_SHELL="$symlink"
-
-# Give Claude context about the remote shell environment,
-# similar to the existing environment system instruction.
-remote_system=$(ssh $host 'uname -sr' 2>/dev/null)
-remote_system_prompt=$(cat <<EOF
-All Bash tool commands are automatically executed remotely in the following environment:
-- Remote host: $host
-- Platform / OS: $remote_system
-- Primary working directory: $remote_path
-- Shell: bash
-- Temporary directory (TMPDIR): $CLAUDE_CODE_TMPDIR
-Do NOT assume /tmp is the temporary directory.
-Always respect the TMPDIR environment variable.
-For \`mktemp\`, use \$TMPDIR explicitly
-EOF
-)
-
-yolo_opts=""
-[[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
-
-claude_args=()
-claude_args+=(--append-system-prompt)
-claude_args+=("$remote_system_prompt")
-[[ -n "$yolo_opts" ]] && claude_args+=("$yolo_opts")
-claude_args+=("$@")
-
-if [[ -n "$SHELL" ]]; then
-    printf -v cmd '%q ' "$claude_bin" "${claude_args[@]}"
-    "$SHELL" -l -c "exec $cmd" --
-else
-    "$claude_bin" "${claude_args[@]}"
-fi
+    ;;
+esac
