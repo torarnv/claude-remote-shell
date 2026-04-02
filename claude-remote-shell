@@ -53,10 +53,40 @@ claude-remote-shell*)
     command -v mutagen &>/dev/null || { echo "⚠️ mutagen is required but not found in PATH" >&2; exit 1; }
 
     session_dir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
+    export CLAUDE_REMOTE_SHELL_DIR="$session_dir"
     export TMPDIR="$session_dir/tmp"
     export CLAUDE_CODE_TMPDIR="$TMPDIR/claude-tmp"
     export MUTAGEN_DATA_DIRECTORY="$session_dir/mutagen"
     mkdir -p "$TMPDIR" "$CLAUDE_CODE_TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
+
+    # Handle session start via plugin, as multiple `--settings` will not merge
+    mkdir -p "$session_dir/plugin/.claude-plugin" "$session_dir/plugin/hooks"
+    cat > "$session_dir/plugin/.claude-plugin/plugin.json" <<'EOF'
+{
+  "name": "claude-remote-shell",
+  "version": "1.0.0",
+  "description": "Captures session metadata for claude-remote-shell"
+}
+EOF
+
+    cat > "$session_dir/plugin/hooks/hooks.json" <<'EOF'
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+
+    ln -sf "$script" "$session_dir/plugin/hooks/session-start"
 
     export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
 
@@ -131,6 +161,7 @@ EOF
     [[ "$(basename "$0")" == *-yolo ]] && yolo_opts='--allowedTools Bash(*)'
 
     claude_args=()
+    claude_args+=(--plugin-dir "$session_dir/plugin")
     claude_args+=(--append-system-prompt)
     claude_args+=("$remote_system_prompt")
     [[ -n "$yolo_opts" ]] && claude_args+=("$yolo_opts")
@@ -142,6 +173,11 @@ EOF
     else
         "$claude_bin" "${claude_args[@]}"
     fi
+    ;;
+
+session-start)
+    # SessionStart hook: write incoming JSON to session dir for later use.
+    cat > "$CLAUDE_REMOTE_SHELL_DIR/session-start.json"
     ;;
 
 bash)
