@@ -79,12 +79,23 @@ EOF
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-end"
+          }
+        ]
+      }
     ]
   }
 }
 EOF
 
     ln -sf "$script" "$session_dir/plugin/hooks/session-start"
+    ln -sf "$script" "$session_dir/plugin/hooks/session-end"
 
     export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
 
@@ -164,19 +175,47 @@ EOF
         fi
     fi
 
+    export CLAUDE_REMOTE_SHELL_CLAUDE_BIN="$(command -v "$claude_bin")"
+
     claude_args=()
     claude_args+=(--plugin-dir "$session_dir/plugin")
-    claude_args+=(--append-system-prompt)
-    claude_args+=("$remote_system_prompt")
+    claude_args+=(--append-system-prompt "$remote_system_prompt")
     [[ "$(basename "$0")" == *-yolo ]] && claude_args+=(--allowedTools 'Bash(*)')
-    claude_args+=("$@")
 
-    if [[ -n "$SHELL" ]]; then
-        printf -v cmd '%q ' "$claude_bin" "${claude_args[@]}"
-        "$SHELL" -l -c "exec $cmd" --
+    if [[ "${1:-}" == "remote-control" || "${1:-}" == "rc" ]]; then
+        # Clone the claude binary so remote-control's process.execPath points to
+        # a path we control. The background job replaces it with a clone of this
+        # script once the process is running. A real file rather than a symlink is
+        # needed because Bun resolves symlinks via realpath before spawning sessions.
+        claude_bin="$session_dir/claude-remote-control"
+        cp -c "$CLAUDE_REMOTE_SHELL_CLAUDE_BIN" "$claude_bin" && chmod +x "$claude_bin"
+
+        ( while true; do
+              pgrep -f "$claude_bin" >/dev/null 2>&1 && { cp -c "$script" "$claude_bin"; exit; }
+              sleep 0.05
+          done
+        ) &
+
+        printf -v CLAUDE_REMOTE_SHELL_ARGS '%q ' "${claude_args[@]}"
+        export CLAUDE_REMOTE_SHELL_ARGS
+
+        "$claude_bin" "$@"
     else
-        "$claude_bin" "${claude_args[@]}"
+        claude_args+=("$@")
+        if [[ -n "$SHELL" ]]; then
+            printf -v cmd '%q ' "$claude_bin" "${claude_args[@]}"
+            "$SHELL" -l -c "exec $cmd" --
+        else
+            "$claude_bin" "${claude_args[@]}"
+        fi
     fi
+    ;;
+
+claude-remote-control)
+    # Session spawn mode: invoked by remote-control when spawning a new session.
+    # Injects plugin and system prompt that couldn't be passed to remote-control itself.
+    eval "claude_args=($CLAUDE_REMOTE_SHELL_ARGS)"
+    exec "$CLAUDE_REMOTE_SHELL_CLAUDE_BIN" "${claude_args[@]}" "$@"
     ;;
 
 session-start)
@@ -191,7 +230,7 @@ session-start)
     mkdir -p "$local_session_dir"
     ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "mkdir -p '$remote_session_dir'"
     mutagen sync create \
-        --name=claude-session-data \
+        --name="claude-session-data-$session_id" \
         --sync-mode=one-way-safe \
         --symlink-mode=posix-raw \
         --ignore="*" \
@@ -203,6 +242,14 @@ session-start)
     # Persist path mappings for the bash wrapper via Claude's env mechanism.
     printf 'export CLAUDE_LOCAL_PROJECT_DIR=%q\n' "$local_project_dir" >> "$CLAUDE_ENV_FILE"
     printf 'export CLAUDE_REMOTE_PROJECT_DIR=%q\n' "$remote_project_dir" >> "$CLAUDE_ENV_FILE"
+    ;;
+
+session-end)
+    input=$(cat)
+    transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path')
+    local_session_dir="${transcript_path%.jsonl}"
+    session_id=$(basename "$local_session_dir")
+    mutagen sync terminate "claude-session-data-$session_id" >/dev/null 2>&1 || true
     ;;
 
 bash)
