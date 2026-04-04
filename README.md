@@ -35,7 +35,7 @@ claude-remote-shell [user@]host:/path/on/remote
 claude-remote-shell [user@]host:/path/on/remote --model claude-opus-4-6
 
 # Use a different Claude binary (e.g., a wrapper)
-claude-remote-shell some-other-wrapper [user@]host:/path/on/remote
+claude-remote-shell [user@]host:/path/on/remote some-other-wrapper --with-args
 ```
 
 Claude launches normally — all Bash tool commands are silently routed to the

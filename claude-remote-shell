@@ -8,10 +8,13 @@ set -euo pipefail
 case "$(basename "$0")" in
 claude-remote-shell*)
     # Launcher mode: parse destination and launch Claude with remote shell configured.
-    [[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [claude-cmd] [user@]host[:/path] [claude args...]" >&2; exit 1; }
+    [[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [user@]host[:/path] [claude-cmd] [claude args...]" >&2; exit 1; }
+
+    dest="$1"
+    shift
 
     claude_bin="claude"
-    if [[ $# -ge 2 && "$1" != *:* && "$1" != *@* ]]; then
+    if [[ $# -ge 1 && "$1" != -* && "$1" != \"* && "$1" != \'* ]]; then
         # Possible custom claude command. Validate by checking via
         # the user's shell (so aliases/functions from rc files work)
         if [[ -n "$SHELL" ]] && "$SHELL" -c "command -v '$1' >/dev/null 2>&1"; then
@@ -21,17 +24,12 @@ claude-remote-shell*)
             # Fall back to direct check if SHELL is not set
             claude_bin="$1"
             shift
-        else
-            echo "Warning: '$1' not found (via $SHELL or command -v), using default 'claude'" >&2
         fi
     fi
 
     if [[ "$claude_bin" != "claude" ]]; then
         echo "🦀 Using claude command '$claude_bin'"
     fi
-
-    dest="$1"
-    shift
 
     if [[ "$dest" == *:* ]]; then
         host="${dest%%:*}"
