@@ -89,11 +89,13 @@ EOF
     export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
 
     teardown() {
+        echo -n "🧹 Cleaning up remote session "
         mutagen sync terminate --all >/dev/null 2>&1 || true
         mutagen daemon stop 2>/dev/null || true
         ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_dir'" 2>/dev/null || true
         ssh -O exit $CLAUDE_REMOTE_SSH_OPTIONS "$host" 2>/dev/null || true
         rm -rf "$session_dir"
+        echo "✅"
     }
     trap teardown EXIT
 
