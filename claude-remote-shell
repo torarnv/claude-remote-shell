@@ -259,7 +259,10 @@ bash)
     cmd="${@: -1}"
 
     sync_flush() {
-        mutagen sync flush --all >/dev/null
+        mutagen sync flush --all >/dev/null 2>&1 || {
+            mutagen sync reset --all >/dev/null 2>&1
+            mutagen sync flush --all >/dev/null
+        }
     }
 
     # Translate local paths to remote paths in the command and cwd.
